@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABbUlEQVR4nO3bvU7DMBiF4eNXGamY2BkREveDxMbUS2JiQ+J+kBAjOxMqO0yRoightvPTOCfP1Db2Vx/HUtxUkXbeQkrjq+u7XxXg6/MtOlfYUvCciQhbDJ4yEWw9/FAWUjuUqi8TsQ23oCsbMofL2e/LiMzhdPa7siJzyBwyh8whc8gcMofMVWM63zy8ai0+Xu6z+oWcneCagudORH2TBJkjtcOaz37O+Cot4PF4O9jm+eld58Aawqe0mxoyh8whc8gcMsfcXxB7eTvXZTDUL/atsKkw5rZ4yb8G6xUQHP8XaE5ANVXB089377HDxeXq6tYYXWFgkDHHl6476QScIgeROti56rYhc8gcMofMIXPIHGMLxG5GUjctc9WdZQUcBgaRO8i56jZVmsgUg1mybg2ZQ+aQOWQOmSPnMZPSNbMiczTfOKyCdkZkjvYHW14FXdmIbVi6vkykdijRf1lCTAHbBydLnYgtrd6dZvYHii+CHl+IjFsAAAAASUVORK5CYII="><title>红外车辆拼贴工具 v2 · IR Vehicle Cut-Paste</title>
+<style>
+  :root{
+    --bg:#0d1621; --bar:#17242f; --panel:#1a2833; --panel2:#13202b;
+    --line:#2b3a47; --txt:#d5e2ec; --sub:#8ba1b0;
+    --blue:#3a7bd5; --blue2:#2f6fb2; --orange:#e8910c;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--txt);}
+  button{font-family:inherit;cursor:pointer;background:#223442;color:var(--txt);border:1px solid #2f4456;border-radius:4px;padding:6px 10px;font-size:13px;}
+  button:hover{border-color:#3a7bd5;}
+  button.blue{background:var(--blue2);border-color:#3a7bd5;}
+  button.orange{background:#7a4d0c;border-color:var(--orange);}
+
+  header{height:48px;background:var(--bar);display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);gap:8px;}
+  .brand{font-weight:bold;font-size:15px;margin-right:6px;white-space:nowrap;display:flex;align-items:center;gap:6px;}
+  .logo{color:#5ecfff;font-size:16px;}
+  .toolbar{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;overflow-x:auto;flex:1;}
+  .toolbar input[type=file]{position:absolute;opacity:0;width:100%;height:100%;left:0;top:0;cursor:pointer;}
+  .toolbar .lblbtn{position:relative;overflow:hidden;display:inline-block;}
+  .toolbar select{background:#223442;color:var(--txt);border:1px solid #2f4456;border-radius:4px;padding:6px;font-size:13px;}
+  .toolbar label.chk{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--sub);white-space:nowrap;}
+  .hint{font-size:11px;color:var(--sub);margin-left:8px;white-space:nowrap;}
+  .dot{width:12px;height:12px;border-radius:50%;background:#35c759;flex:none;}
+
+  #wrap{display:flex;height:calc(100vh - 48px);}
+  #main{flex:1;position:relative;overflow:hidden;display:flex;flex-direction:column;}
+  #canvasWrap{flex:1;position:relative;overflow:hidden;background:#0a121a;}
+  canvas{position:absolute;top:0;left:0;transform-origin:0 0;background:#0a121a;}
+  .sidearrow{position:absolute;top:50%;transform:translateY(-50%);z-index:5;width:40px;height:64px;font-size:22px;background:rgba(0,0,0,.35);border:1px solid #2f4456;color:#a9c2d4;border-radius:6px;}
+  .sidearrow:hover{background:rgba(58,123,213,.35);}
+  .sidearrow.left{left:10px;} .sidearrow.right{right:10px;}
+  #stem{flex:none;background:var(--bar);border-top:1px solid var(--line);font-size:12px;color:var(--sub);padding:6px 12px;min-height:32px;}
+
+  #side{width:330px;flex:none;background:var(--panel);border-left:1px solid var(--line);padding:12px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
+  #side h3{font-size:13px;margin:0;padding:6px 8px;border-radius:4px;background:rgba(58,123,213,.14);border-left:3px solid var(--blue);color:#cfe3f5;font-weight:bold;display:flex;align-items:center;gap:6px;}
+  #side h3 .ic{font-size:14px;}
+  #side h3.orange{background:rgba(232,145,12,.14);border-left-color:var(--orange);color:#ffe0b0;}
+  button.secbtn{background:#1c2b38;border:1px solid #3a5a72;color:#cfe3f5;}
+  button.save{background:#e8eef3;color:#12202b;border:1px solid #c6d2da;font-weight:normal;}
+  button.save:hover{border-color:#3a7bd5;}
+  button.save.active{background:#2f6fb2;color:#fff;border:1px solid #2f6fb2;font-weight:bold;}
+  #side .sec{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px;}
+  .fileinfo{font-size:14px;font-weight:bold;}
+  .filesub{font-size:12px;color:var(--sub);margin-top:3px;}
+  .filesub .fname{color:#9fe3ff;font-weight:bold;word-break:break-all;}
+  #dirInfo{line-height:1.5;}
+  .navrow{display:flex;gap:6px;align-items:center;margin-top:8px;}
+  .navrow button{flex:1;}
+  .navrow select{flex:1.5;background:#223442;color:var(--txt);border:1px solid #2f4456;border-radius:4px;padding:6px;font-size:12px;}
+  .row2{display:flex;gap:8px;margin-top:8px;}
+  .row2 button{flex:1;}
+  label.chk{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--sub);margin-top:8px;}
+  .status{font-size:12px;color:#ffd07a;margin-top:8px;}
+  .note{font-size:11px;color:var(--sub);line-height:1.6;margin-top:6px;}
+  .slider{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+  .slider .s{display:grid;grid-template-columns:52px 1fr 70px;align-items:center;gap:8px;font-size:12px;}
+  .slider input{width:100%;}
+  .slider .val{color:#7fd0ff;text-align:right;}
+  #infoBox{font-size:12px;line-height:1.8;color:#eee;}
+  #infoBox b{color:#ffd07a;}
+  #infoBox .del{background:#7a2a2a;border-color:#b04040;padding:2px 8px;font-size:12px;}
+  .stats .srow{display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;}
+  .stats .slab{width:52px;color:#9fe3ff;flex:none;}
+  .stats .barwrap{flex:1;background:#0d1621;border-radius:3px;height:13px;overflow:hidden;}
+  .stats .bar{display:block;height:100%;border-radius:3px;}
+  .stats .sval{width:78px;text-align:right;color:#cfe3f5;flex:none;}
+  .stats .stotal{font-size:12px;color:#8ba1b0;margin-top:6px;}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">▦</span>红外车辆拼贴工具 v2</div>
+  <div class="toolbar">
+    <label class="lblbtn"><button>打开文件夹</button><input type="file" id="folderInput" webkitdirectory multiple></label>
+    <select id="spectrumSel" title="光谱：红外（灰度素材）/ 可见光（彩色素材）——两套数据请分别保存到不同目录"></select>
+    <select id="paletteSel" title="可见光配色筛选（仅可见光模式可选）"></select>
+    <select id="modeSel" title="类别组：基础四类 / 类增量新四类（两套严格分开）"></select>
+    <select id="vehSel" title="类别（下一辆生效，之后回自动）">
+      <option value="-1">自动（推荐）</option>
+    </select>
+    <button id="fitBtn">适应窗口</button>
+    <button id="clear">清空当前框</button>
+    <label class="chk"><input type="checkbox" id="hideLabels">隐藏所有标签</label>
+    <span class="hint">点空白放车 · 红外/可见光素材按光谱加载 · 可拖整个文件夹进来</span>
+  </div>
+  <div class="dot"></div>
+</header>
+
+<div id="wrap">
+  <div id="main">
+    <button class="sidearrow left" id="prev">◀</button>
+    <div id="canvasWrap"><canvas id="cv"></canvas></div>
+    <button class="sidearrow right" id="next">▶</button>
+    <div id="stem">v2：点空白=放车（按当前「光谱 · 类别组」自动挑车型/视角，1-4 或下拉框可指定类别）；点已有车=选中/拖动；拖空白或右键=平移；滚轮=缩放；←/→ 切图。顶部可切「光谱（红外/可见光）」「配色」「类别组」。</div>
+  </div>
+
+  <aside id="side">
+    <div class="sec">
+      <div class="fileinfo" id="fileInfo">—</div>
+      <div class="filesub"><span id="bgIdx">0/0</span> · <span id="v_zoom">100%</span></div>
+      <div class="navrow">
+        <button id="prev2">上一张</button>
+        <button id="next2">下一张</button>
+      </div>
+      <select id="imgSel" style="width:100%;margin-top:6px;"></select>
+    </div>
+
+    <div class="sec">
+      <h3><span class="ic">📋</span> 标注计划（随机提示）</h3>
+      <div id="planInfo" class="note" style="color:#cfe3f5;">—</div>
+      <button id="replan" style="width:100%;margin-top:6px;">换一组计划</button>
+      <div class="note">车型/视角从当前「光谱 · 类别组」的素材里自动挑选，面板会显示下一个将使用的素材。</div>
+      <div class="note" id="mixInfo" style="display:none;color:#ffd07a;"></div>
+      <button id="cleanOther" style="width:100%;margin-top:6px;display:none;">删除本图不属于当前光谱/模式的车</button>
+    </div>
+
+    <div class="sec">
+      <h3><span class="ic">📊</span> 车型统计</h3>
+      <div id="statsInfo" class="note" style="color:#cfe3f5;">—</div>
+    </div>
+
+    <div class="sec">
+      <h3><span class="ic">📁</span> 标签保存 (VOC XML · 图片/标注分包)</h3>
+      <button id="pickDir" style="width:100%;margin-top:8px;">选择保存文件夹…</button>
+      <div class="filesub" id="dirInfo" style="margin-top:6px;">未选择保存文件夹</div>
+      <div class="row2">
+        <button class="save" id="saveCur">保存当前图片</button>
+        <button class="save" id="saveAll">保存全部标注</button>
+      </div>
+      <div class="status" id="saveStatus">当前图片状态：未保存</div>
+      <div class="note">保存后在所选根目录下自动创建 <b>images/</b>（无框图）与 <b>xml/</b>（VOC）。图片与 XML 同名。<br>
+      标注框按<b>车辆实体范围</b>（素材透明边界）计算，不含素材四周的透明留白。</div>
+    </div>
+
+    <div class="sec">
+      <h3><span class="ic">🚗</span> 车辆 &amp; 融合参数</h3>
+      <div class="slider">
+        <div class="s"><span>大小</span><input type="range" id="r_size" min="0.01" max="0.60" step="0.005" value="0.06"><span class="val" id="v_size"></span></div>
+        <div class="s"><span>亮暗</span><input type="range" id="r_bright" min="0.20" max="1.8" step="0.02" value="0.8"><span class="val" id="v_bright"></span></div>
+        <div class="s"><span>对比</span><input type="range" id="r_contrast" min="0.2" max="2.0" step="0.05" value="1"><span class="val" id="v_contrast"></span></div>
+        <div class="s"><span>模糊</span><input type="range" id="r_blur" min="0" max="8" step="0.1" value="0.2"><span class="val" id="v_blur"></span></div>
+        <div class="s"><span>旋转</span><input type="range" id="r_rot" min="-180" max="180" step="1" value="0"><span class="val" id="v_rot"></span></div>
+      </div>
+      <div class="note">滑块作用于选中的车。</div>
+    </div>
+
+    <div class="sec">
+      <h3 class="orange"><span class="ic">🎯</span> 框选结果（实体范围 · 像素坐标 · 含边界）</h3>
+      <div id="infoBox">（选中车辆后显示）</div>
+    </div>
+
+    <div class="sec">
+      <div class="note">v2 变更：① 素材含<b>红外（灰度）与可见光（彩色，沙漠迷彩/军绿两套配色）</b>，按「光谱 + 类别组」分组、按需加载；
+      ② 类别表按官方口径 <b>0 car1 装甲车 / 1 car2 卡车 / 2 car3 轿车 / 3 car4 皮卡 / 4 radar_vehicle 雷达车 / 5 military_fuel_tanker 军用油罐车 /
+      6 bridge_layer 轮式架桥车 / 7 military_motorcycle 军用越野摩托车</b>（旧版把 car2/car4 的中文名写反了）；③ 标注框按车辆实体范围计算；
+      ④ 融合按通道对齐背景统计——红外出灰度、可见光保色。
+      旧版仍在 <a href="../" style="color:#7fd0ff;">上层目录</a>。</div>
+    </div>
+
+    <div class="sec">
+      <h3><span class="ic">🧩</span> 光谱与类别组（各套分开）</h3>
+      <div class="note" style="color:#cfe3f5;">
+        <b>光谱</b>：红外（灰度素材）／可见光（彩色素材，两套配色）——<b>建议各自用不同的输出目录</b><br>
+        <b>类别组</b>：基础四类 car1 装甲车 / car2 卡车 / car3 轿车 / car4 皮卡；类增量新四类 radar_vehicle 雷达车 / military_fuel_tanker 军用油罐车 / bridge_layer 轮式架桥车 / military_motorcycle 军用越野摩托车<br>
+        类别 ID 为官方口径：旧类 0~3 不变，新类从 <b>4</b> 起追加。同一建模的两套配色、两套光谱共享 family，划分数据集时不要拆开。<br>
+        同一张图里混了不同光谱/类别组的数据会在「标注计划」里给出警告。
+      </div>
+    </div>
+
+    <div class="row2">
+      <button id="undo">撤销(z)</button>
+      <button id="clear2">清空(c)</button>
+    </div>
+  </aside>
+</div>
+<script src="classes.js"></script>
+<script src="sprite_groups.js"></script>
+<script src="sprites_ir_base.js"></script>
+<script src="app.js?v=3"></script>
+</body>
+</html>
