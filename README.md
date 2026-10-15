@@ -58,6 +58,25 @@ python scripts\build_cutpaste_sprites.py ^
 - 构建会**逐张交叉校验**包内清单（`样本清单.csv` / `02_审核清单.csv` 的 class_id / class_name / 中文类别 / 车型 / **配色** / yaw / off），不一致直接报错——本次 66+24+90+90 = **270 行全部一致**。
 - 产物：`classes.js`（类别表）、`sprite_groups.js`（分组清单）、`sprites_ir_base.js`、`sprites_ir_incr.js`、`sprites_vis_desert.js`、`sprites_vis_olive.js`、`build_report.json`。
 
+## 背景图载入（大量图片也顺畅）
+
+- **按需解码**：选文件夹/拖文件夹后，工具只登记文件清单（列表立刻可用），真正解码只发生在切到那张图时；内存里最多保留最近 **4 张**解码结果，其余自动释放。因此一次选几百上千张也不会卡死。
+- **进度可见**：拖文件夹时显示"已发现 N 个文件"，载入后显示"正在解码：xxx（n/N 张在内存）"，分类组/光谱切换也有加载提示；解码失败的那张会明确提示并可跳过。
+- **批量保存**：逐张解码 → 合成 → 写出 → 释放，不会因为图片多而爆内存。
+- 单张特别大的图（>4000 万像素）会在状态栏给出提示（合成与保存会变慢）；合成图保持与原图同分辨率。
+
+## 本地验证（改完请跑）
+
+```bat
+rem 功能套件：光谱/配色/类别组、素材加载、实体框、XML、保色、混用告警等（46 项）
+python scripts\verify_cutpaste_v2_page.py --site github_repos\vehicle-cut-paste --out tmp\cutpaste_v2_verify
+
+rem 压力套件：一次载入 120 张背景（按需解码/内存上限/快速连切/批量保存，9 项）
+python scripts\verify_cutpaste_stress.py --site github_repos\vehicle-cut-paste --out tmp\cutpaste_v2_verify
+```
+
+两个套件必须分开跑：同一个无头 Chrome 里既跑完整功能流程又跑大批量载入，会撞上 `--virtual-time-budget` 预算而挂住。
+
 ## 注意事项与风险
 
 - 三个包都标注为 **QA 候选**（`qa_only: true`、`approved: false`、`license_allows_training: false`）；可见光包的配色是按厂家可见外观做的程序化首版，**不代表真实型号涂装复刻**，也未经红外辐射标定。投入训练前须完成外观与使用权复核。
