@@ -138,7 +138,8 @@
       </div>
       <div class="status" id="saveStatus">当前图片状态：未保存</div>
       <div class="note">保存后在所选根目录下自动创建 <b>images/</b>（无框图）与 <b>xml/</b>（VOC）。图片与 XML 同名。<br>
-      标注框按<b>车辆实体范围</b>（素材透明边界）计算，不含素材四周的透明留白。</div>
+      标注框按<b>车辆实体范围</b>（素材透明边界）计算，不含素材四周的透明留白。<br>
+      <b>换保存文件夹前会自动把未保存的标注全部写进原文件夹</b>，避免新旧批次混在一起；换目录后新的保存都进新文件夹。</div>
     </div>
 
     <div class="sec">
@@ -185,6 +186,6 @@
 <script src="classes.js"></script>
 <script src="sprite_groups.js"></script>
 <script src="sprites_ir_base.js"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

@@ -343,7 +343,7 @@ function buildPaletteSelect(){
     if(k==='ir') return;
     const o=document.createElement('option'); o.value=k; o.textContent=PALETTES[k]; sel.appendChild(o);
   });
-  sel.value=(palFilter==='all'?'all':palFilter);
+  sel.value=isVisPalette(palFilter) ? palFilter : 'all';
   sel.disabled=(spectrum!=='vis');
   sel.title=(spectrum==='vis')?'可见光配色筛选（默认两套都能被抽到）':'配色筛选只在可见光模式下有效';
 }
@@ -421,9 +421,11 @@ async function switchMode(m){
               '（键盘 1-4 对应本组四类；两套数据请分别保存到不同目录）');
   }
 }
+/* 可见光配色筛选的合法值（'ir' 只属于红外，不能带进可见光，否则一个素材都匹配不上） */
+function isVisPalette(p){ return p==='all' || p==='desert_camo' || p==='olive_green' || (p && p!=='ir' && typeof PALETTES!=='undefined' && !!PALETTES[p]); }
 /* 切换光谱（红外 / 可见光）与配色筛选：按需加载素材文件，已有标注不丢 */
 async function switchSpectrum(sp, pal){
-  const nextPal = (sp==='vis') ? (pal || (palFilter==='all'?'all':palFilter)) : 'ir';
+  const nextPal = (sp==='vis') ? ((pal && isVisPalette(pal)) ? pal : (isVisPalette(palFilter) ? palFilter : 'all')) : 'ir';
   if(sp===spectrum && (sp!=='vis' || nextPal===palFilter)) return;
   const token=++specReq;   // 连点保护：只有最后一次切换能落地
   try{ await ensureGroups(sp, nextPal); }
@@ -587,9 +589,86 @@ function download(name,blob){
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1200);
   }catch(e){ alert('下载失败：'+(e&&e.message||e)); }
 }
-function setDirInfo(){ document.getElementById('dirInfo').innerHTML='已选择: <b class="fname">'+saveRoot.name+'</b> （点击更改）'; }
-async function pickDir(){ if(!window.showDirectoryPicker){ alert('该浏览器不支持文件夹选择'); return; } try{ saveRoot=await window.showDirectoryPicker({mode:'readwrite'}); setDirInfo(); }catch(err){} }
+function setDirInfo(){ document.getElementById('dirInfo').innerHTML='已选择: <b class="fname">'+saveRoot.name+'</b> （点击更改；更改前会把未保存的先写到原文件夹）'; }
+/* 换保存文件夹：先把未保存的标注全部写进「原文件夹」，再切到新文件夹（避免新旧批次混在一起） */
+async function pickDir(){
+  if(!window.showDirectoryPicker){ alert('该浏览器不支持文件夹选择'); return; }
+  const pending = pendingItems().length;
+  let flushed = null;
+  if(pending) flushed = await flushBeforeDirChange('保存文件夹');
+  try{
+    const next = await window.showDirectoryPicker({mode:'readwrite'});
+    saveRoot = next; setDirInfo();
+    const left = pendingItems().length;
+    setStatus((flushed && flushed.saved ? ('已先把 '+flushed.saved+' 张写入「'+flushed.label+'」；') : '')
+      + '保存文件夹已切到「'+next.name+'」' + (left ? ('，还有 '+left+' 张未保存会写进新文件夹') : '，当前没有未保存的标注'));
+  }catch(err){
+    if(err && err.name==='AbortError'){
+      const left = pendingItems().length;
+      setStatus('已取消选择，保存文件夹仍是「'+(saveRoot?saveRoot.name:'未选择')+'」'+ (left?('（还有 '+left+' 张未保存）'):''));
+      return;
+    }
+    alert('选择文件夹失败：'+(err&&err.message||err));
+  }
+}
 async function ensureRoot(){ if(saveRoot) return saveRoot; if(!window.showDirectoryPicker) return null; try{ saveRoot=await window.showDirectoryPicker({mode:'readwrite'}); setDirInfo(); return saveRoot; }catch(err){ return null; } }
+/* 待保存的图：有车位、且没保存过或有改动 */
+function pendingItems(){
+  saveCurrentPlacements();
+  const items=[];
+  for(let i=0;i<bgFiles.length;i++){ const pl=imgPlacements[i]||[]; if(pl.length && (dirtyMap[i]||!savedMap[i])) items.push({idx:i,pl,stem:bgFiles[i].name.replace(/\.[^.]+$/,'')}); }
+  return items;
+}
+/* 把若干张写出去：逐张 解码→合成→写出→释放；silent=true 时不弹窗，只更新状态 */
+async function writeItems(items, silent){
+  const root = await ensureRoot();
+  const renderItem = async (it) => { const im = await ensureBgImage(it.idx); if(!im) return null;
+    const png = await compositeBlob(im, it.pl); const {voc} = buildLabels(im, it.pl); return {png,voc}; };
+  let ok = 0;
+  const done = (it) => { savedMap[it.idx]=true; dirtyMap[it.idx]=false; ok++; };
+  if(root){
+    try{
+      const imgDir = await root.getDirectoryHandle('images',{create:true}); const xmlDir = await root.getDirectoryHandle('xml',{create:true});
+      for(let k=0;k<items.length;k++){ const it=items[k];
+        saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…');
+        const out = await renderItem(it); if(!out) continue;
+        await writeFile(imgDir, it.stem+'_composite.png', out.png); await writeFile(xmlDir, it.stem+'.xml', new Blob([out.voc],{type:'text/xml'}));
+        done(it);
+      }
+      return {mode:'folder', ok:ok, total:items.length, root:root};
+    }catch(err){
+      if(err && err.name==='AbortError') return {mode:'abort', ok:ok, total:items.length, root:root};
+      if(!silent) alert('写入文件夹失败：'+(err.message||err)+'。已改为逐个下载。');
+      for(const it of items){
+        if(savedMap[it.idx] && !dirtyMap[it.idx]) continue;      // 已经写过的跳过
+        const out = await renderItem(it); if(!out) continue;
+        download(it.stem+'_composite.png', out.png); download(it.stem+'.xml', new Blob([out.voc],{type:'text/xml'})); done(it);
+      }
+      return {mode:'download', ok:ok, total:items.length, root:root};
+    }
+  }
+  for(let k=0;k<items.length;k++){ const it=items[k];
+    saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…');
+    const out = await renderItem(it); if(!out) continue;
+    download(it.stem+'_composite.png', out.png); download(it.stem+'.xml', new Blob([out.voc],{type:'text/xml'})); done(it);
+  }
+  return {mode:'download', ok:ok, total:items.length, root:null};
+}
+/* 切换保存位置（文件夹或子文件夹）之前：先把未保存的全部写进原位置 */
+async function flushBeforeDirChange(why){
+  const items = pendingItems();
+  if(!items.length) return {saved:0, total:0, skipped:true, label:''};
+  const label = saveRoot ? saveRoot.name : '(逐张下载)';
+  setSaveStatus('切换'+(why||'保存位置')+'前：正在把 '+items.length+' 张未保存的标注写入「'+label+'」…');
+  try{
+    const r = await writeItems(items, true);
+    showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 切换前已保存 '+r.ok+'/'+r.total+' 张 → '+label);
+    return {saved:r.ok, total:r.total, skipped:false, label:label, mode:r.mode};
+  }catch(err){
+    showSaveStatus('切换前的自动保存失败：'+(err&&err.message||err)+'（这些仍留在待保存里）');
+    return {saved:0, total:items.length, failed:true, label:label};
+  }
+}
 function exportJSON(){ if(!bg) return; const data={image:bg.name,width:bg.naturalWidth,height:bg.naturalHeight,boxes:placements.map(p=>({class:clsName(p),sprite:(SPRITES[p.si]||{}).n||'',cx:Math.round(p.x),cy:Math.round(p.y),rot:p.rot,size:p.size,bright:p.bright,contrast:p.contrast,blur:p.blur}))}; download(shareName()+'.json',new Blob([JSON.stringify(data,null,2)],{type:'application/json'})); }
 function validBlob(b){ return b && b.size>0; }
 /* 保存状态里的光谱/模式标记与混用提醒 */
@@ -615,23 +694,14 @@ async function saveCurrent(){
 async function saveAll(){
   if(!bgFiles.length){ alert('先加载背景图'); return; }
   try{
-    saveCurrentPlacements();
-    const items=[]; for(let i=0;i<bgFiles.length;i++){ const pl=imgPlacements[i]||[]; if(pl.length && (dirtyMap[i]||!savedMap[i])) items.push({idx:i,pl,stem:bgFiles[i].name.replace(/\.[^.]+$/,'')}); }
+    const items = pendingItems();
     if(!items.length){ alert('没有需要保存的图（都已保存且未修改）'); return; }
-    const root=await ensureRoot();
-    /* 背景图按需解码：保存时逐张解码 -> 合成 -> 写完即释放，几百张也不会爆内存 */
-    const renderItem=async (it)=>{ const im=await ensureBgImage(it.idx); if(!im) return null;
-      const png=await compositeBlob(im,it.pl); const {voc}=buildLabels(im,it.pl); return {png,voc}; };
-    if(root){ try{ const imgDir=await root.getDirectoryHandle('images',{create:true}); const xmlDir=await root.getDirectoryHandle('xml',{create:true});
-      for(let k=0;k<items.length;k++){ const it=items[k];
-        saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…');
-        const out=await renderItem(it); if(!out) continue;
-        await writeFile(imgDir,it.stem+'_composite.png',out.png); await writeFile(xmlDir,it.stem+'.xml',new Blob([out.voc],{type:'text/xml'}));
-        savedMap[it.idx]=true; dirtyMap[it.idx]=false;
-      }
-      showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 本次增量保存完成，共 '+items.length+' 张'); }
-      catch(err){ if(err&&err.name!=='AbortError'){ alert('写入文件夹失败：'+(err.message||err)+'。已改为逐个下载。'); for(const it of items){ const out=await renderItem(it); if(!out) continue; download(it.stem+'_composite.png',out.png); download(it.stem+'.xml',new Blob([out.voc],{type:'text/xml'})); savedMap[it.idx]=true; dirtyMap[it.idx]=false; } showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已下载新增 '+items.length+' 张（文件夹写入失败回退）'); } } }
-    else { for(let k=0;k<items.length;k++){ const it=items[k]; saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…'); const out=await renderItem(it); if(!out) continue; download(it.stem+'_composite.png',out.png); download(it.stem+'.xml',new Blob([out.voc],{type:'text/xml'})); savedMap[it.idx]=true; dirtyMap[it.idx]=false; } showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已下载新增 '+items.length+' 张（需本地服务才能“存文件夹”）'); }
+    const r = await writeItems(items, false);
+    const tag = saveTag(items.map(it=>it.pl).flat());
+    if(r.mode === 'abort'){ showSaveStatus(tag+' · 已取消'); return; }
+    showSaveStatus(tag + ' · ' + (r.mode === 'folder'
+      ? ('本次增量保存完成，共 '+r.ok+'/'+r.total+' 张 → '+(r.root?r.root.name:'')+'/images+ xml/')
+      : ('已下载新增 '+r.ok+'/'+r.total+' 张（不支持写文件夹或写入失败，已改为逐张下载）')));
   } catch(err){ alert('保存出错：'+(err&&err.message||err)); }
 }
 
