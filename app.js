@@ -130,7 +130,9 @@ function fitZoom(){ const cw=leftEl.clientWidth, ch=leftEl.clientHeight; zoom=bg
 function wheelZoom(e){ if(!bg) return; e.preventDefault(); const lr=leftEl.getBoundingClientRect(); const mx=e.clientX-lr.left, my=e.clientY-lr.top; const oldZoom=zoom; const factor=Math.exp(-e.deltaY*0.0016); const nz=Math.min(64, Math.max(0.05, oldZoom*factor)); tx=mx-(mx-tx)*(nz/oldZoom); ty=my-(my-ty)*(nz/oldZoom); zoom=nz; updateView(); }
 function imgPoint(e){ const r=cv.getBoundingClientRect(); return [(e.clientX-r.left)*(cv.width/r.width),(e.clientY-r.top)*(cv.height/r.height)]; }
 function updateFileInfo(){ if(!bg) return; document.getElementById('fileInfo').textContent = bg.name+'   '+bg.naturalWidth+'x'+bg.naturalHeight+'px'; document.getElementById('bgIdx').textContent=(curIdx+1)+'/'+bgFiles.length; }
+/* 下拉列表只在文件列表变化时重建；切图时只改选中项（几百上千张时避免每次导航都重建 DOM） */
 function updateImgSel(){ const sel=document.getElementById('imgSel'); sel.innerHTML=''; bgFiles.forEach((f,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=f.name; if(i===curIdx)o.selected=true; sel.appendChild(o); }); }
+function syncImgSel(){ const sel=document.getElementById('imgSel'); if(!sel||sel.options.length!==bgFiles.length) { updateImgSel(); return; } sel.value=String(curIdx); }
 
 // ===== 几何（一律按「实体范围」计算：素材 alpha 外接框，而不是整张画布）=====
 function rotatePt(px,py,cx,cy,deg){ const r=deg*Math.PI/180,c=Math.cos(r),s=Math.sin(r),dx=px-cx,dy=py-cy; return [cx+dx*c-dy*s, cy+dx*s+dy*c]; }
@@ -496,15 +498,60 @@ function onMove(e){
 function onUp(){ if(pan){pan=null;return;} if(drag){drag=null;return;} if(resize){resize=null;return;} if(rotDrag){rotDrag=null;return;} if(pending){ placeVehicleAt(pending.ix,pending.iy,0); pending=null; } }
 
 // ===== 多图 =====
+/* 背景图按需解码：只保留最近用过的几张在内存里（上传几百张也不会一次解码爆内存） */
+const IMG_CACHE_MAX = 4;
+let imgCache = [];
+function touchCache(i){ imgCache = imgCache.filter(x => x !== i); imgCache.push(i); }
+function evictCache(){
+  // 释放最久未用的（当前图不释放）；注意不能因为「当前图在队首」就整体停止回收
+  let guard = 0;
+  while (imgCache.length > IMG_CACHE_MAX && guard++ < 64) {
+    const pos = imgCache.findIndex(x => x !== curIdx);
+    if (pos < 0) break;                      // 只剩当前图，无需再释放
+    const old = imgCache.splice(pos, 1)[0];
+    const e = bgFiles[old];
+    if (e) e.img = null;
+  }
+}
+function decodeFile(file){
+  return new Promise(res => {
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    im.onload = () => { URL.revokeObjectURL(url); res(im); };
+    im.onerror = () => { URL.revokeObjectURL(url); res(null); };
+    im.src = url;
+  });
+}
+async function ensureBgImage(i){
+  const e = bgFiles[i];
+  if (!e) return null;
+  if (e.img) { touchCache(i); return e.img; }
+  const im = await decodeFile(e.file);
+  if (!im) return null;
+  im.name = e.name;                          // 下游（文件名/XML stem）继续用 img.name
+  e.img = im; touchCache(i); evictCache();
+  return im;
+}
+function prefetchBg(i){ if (i >= 0 && i < bgFiles.length && !bgFiles[i].img) ensureBgImage(i).catch(() => {}); }
+function decodedCount(){ let n = 0; for (const e of bgFiles) if (e && e.img) n++; return n; }
+
 function saveCurrentPlacements(){ if(curIdx>=0) imgPlacements[curIdx]=placements.slice(); }
-function loadCurrent(){
+async function loadCurrent(){
   if(curIdx<0||curIdx>=bgFiles.length) return;
-  bg=bgFiles[curIdx].img; cv.width=bg.naturalWidth; cv.height=bg.naturalHeight;
+  const entry = bgFiles[curIdx];
+  setSaveStatus('正在解码：「'+entry.name+'」…（'+decodedCount()+'/'+bgFiles.length+' 张在内存）');
+  const im = await ensureBgImage(curIdx);
+  if (!im) { setStatus('⚠ 这张背景图解码失败：'+entry.name+'（可切到下一张）'); showSaveStatus(); return; }
+  if (bgFiles[curIdx] !== entry) return;    // 解码期间用户又切图了，丢弃本次结果
+  bg=im; cv.width=bg.naturalWidth; cv.height=bg.naturalHeight;
   placements=imgPlacements[curIdx]||[]; selected=-1; drag=null; pan=null; pending=null; resize=null; rotDrag=null; 
-  fitZoom(); redraw(); updateFileInfo(); updateImgSel();
+  fitZoom(); redraw(); updateFileInfo(); syncImgSel();
   showSaveStatus();
   updateStats(); updateMixInfo();
   genPlan();
+  prefetchBg(curIdx+1);                     // 预取下一张，切图更顺
+  const px = bg.naturalWidth * bg.naturalHeight;
+  if (px > 4e7) setStatus('提示：这张图很大（'+bg.naturalWidth+'x'+bg.naturalHeight+'，约 '+(px/1e6).toFixed(0)+' 百万像素），合成与保存会明显变慢');
 }
 function goto(delta){ const n=clampz(curIdx+delta,0,bgFiles.length-1); if(n===curIdx) return; saveCurrentPlacements(); curIdx=n; loadCurrent(); }
 function jumpTo(i){ const n=clampz(i,0,bgFiles.length-1); if(n===curIdx) return; saveCurrentPlacements(); curIdx=n; loadCurrent(); }
@@ -569,24 +616,42 @@ async function saveAll(){
   if(!bgFiles.length){ alert('先加载背景图'); return; }
   try{
     saveCurrentPlacements();
-    const items=[]; for(let i=0;i<bgFiles.length;i++){ const pl=imgPlacements[i]||[]; if(pl.length && (dirtyMap[i]||!savedMap[i])) items.push({idx:i,bgImg:bgFiles[i].img,pl,stem:bgFiles[i].img.name.replace(/\.[^.]+$/,'')}); }
+    const items=[]; for(let i=0;i<bgFiles.length;i++){ const pl=imgPlacements[i]||[]; if(pl.length && (dirtyMap[i]||!savedMap[i])) items.push({idx:i,pl,stem:bgFiles[i].name.replace(/\.[^.]+$/,'')}); }
     if(!items.length){ alert('没有需要保存的图（都已保存且未修改）'); return; }
     const root=await ensureRoot();
+    /* 背景图按需解码：保存时逐张解码 -> 合成 -> 写完即释放，几百张也不会爆内存 */
+    const renderItem=async (it)=>{ const im=await ensureBgImage(it.idx); if(!im) return null;
+      const png=await compositeBlob(im,it.pl); const {voc}=buildLabels(im,it.pl); return {png,voc}; };
     if(root){ try{ const imgDir=await root.getDirectoryHandle('images',{create:true}); const xmlDir=await root.getDirectoryHandle('xml',{create:true});
       for(let k=0;k<items.length;k++){ const it=items[k];
         saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…');
-        const png=await compositeBlob(it.bgImg,it.pl); const {voc}=buildLabels(it.bgImg,it.pl);
-        await writeFile(imgDir,it.stem+'_composite.png',png); await writeFile(xmlDir,it.stem+'.xml',new Blob([voc],{type:'text/xml'}));
+        const out=await renderItem(it); if(!out) continue;
+        await writeFile(imgDir,it.stem+'_composite.png',out.png); await writeFile(xmlDir,it.stem+'.xml',new Blob([out.voc],{type:'text/xml'}));
         savedMap[it.idx]=true; dirtyMap[it.idx]=false;
       }
       showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 本次增量保存完成，共 '+items.length+' 张'); }
-      catch(err){ if(err&&err.name!=='AbortError'){ alert('写入文件夹失败：'+(err.message||err)+'。已改为逐个下载。'); for(const it of items){ const png=await compositeBlob(it.bgImg,it.pl); const {voc}=buildLabels(it.bgImg,it.pl); download(it.stem+'_composite.png',png); download(it.stem+'.xml',new Blob([voc],{type:'text/xml'})); savedMap[it.idx]=true; dirtyMap[it.idx]=false; } showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已下载新增 '+items.length+' 张（文件夹写入失败回退）'); } } }
-    else { for(let k=0;k<items.length;k++){ const it=items[k]; saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…'); const png=await compositeBlob(it.bgImg,it.pl); const {voc}=buildLabels(it.bgImg,it.pl); download(it.stem+'_composite.png',png); download(it.stem+'.xml',new Blob([voc],{type:'text/xml'})); savedMap[it.idx]=true; dirtyMap[it.idx]=false; } showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已下载新增 '+items.length+' 张（需本地服务才能“存文件夹”）'); }
+      catch(err){ if(err&&err.name!=='AbortError'){ alert('写入文件夹失败：'+(err.message||err)+'。已改为逐个下载。'); for(const it of items){ const out=await renderItem(it); if(!out) continue; download(it.stem+'_composite.png',out.png); download(it.stem+'.xml',new Blob([out.voc],{type:'text/xml'})); savedMap[it.idx]=true; dirtyMap[it.idx]=false; } showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已下载新增 '+items.length+' 张（文件夹写入失败回退）'); } } }
+    else { for(let k=0;k<items.length;k++){ const it=items[k]; saveProgress('正在保存 '+(k+1)+'/'+items.length+'：「'+it.stem+'」…'); const out=await renderItem(it); if(!out) continue; download(it.stem+'_composite.png',out.png); download(it.stem+'.xml',new Blob([out.voc],{type:'text/xml'})); savedMap[it.idx]=true; dirtyMap[it.idx]=false; } showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已下载新增 '+items.length+' 张（需本地服务才能“存文件夹”）'); }
   } catch(err){ alert('保存出错：'+(err&&err.message||err)); }
 }
 
 // ===== 初始化 =====
-function loadImageFiles(files){ const reads=Array.from(files).map(f=>new Promise(res=>{ const rd=new FileReader(); rd.onload=()=>{ const img=new Image(); img.onload=()=>{ img.name=f.name; res({name:f.name,img}); }; img.src=rd.result; }; rd.readAsDataURL(f); })); Promise.all(reads).then(list=>{ if(!list.length) return; bgFiles=list.filter(x=>x&&x.img); curIdx=0; imgPlacements={}; placements=[]; savedMap={}; dirtyMap={}; loadCurrent(); setStatus('已加载 '+bgFiles.length+' 张背景'); }); }
+/* 载入背景图：只登记文件对象（不在这里解码），界面立刻可用；真正解码在切到该图时按需进行。
+   这样上传几百上千张也不会卡死（旧版是一次性把所有图都解码进内存）。 */
+function loadImageFiles(files){
+  const list = Array.from(files || []).filter(f => /\.(png|jpe?g|bmp|webp|gif|tif?f)$/i.test(f.name));
+  if (!list.length) { setStatus('没有找到可用的背景图（支持 png / jpg / bmp / webp）'); return; }
+  list.sort((a,b)=>a.name.localeCompare(b.name, 'zh-Hans-CN', {numeric:true, sensitivity:'base'}));
+  bgFiles = list.map(f => ({ name: f.name, file: f, img: null }));
+  imgCache = []; curIdx = 0; imgPlacements = {}; placements = []; savedMap = {}; dirtyMap = {};
+  bg = null;
+  ctx.clearRect(0, 0, cv.width, cv.height);           // 立刻清空旧图，避免看着像卡住
+  document.getElementById('fileInfo').textContent = '—';
+  document.getElementById('stem').textContent = '已载入 '+bgFiles.length+' 张，正在解码第 1 张…';
+  updateImgSel();
+  setStatus('已载入 '+bgFiles.length+' 张背景图（列表已就绪，图片按需解码，不会一次性占满内存）');
+  loadCurrent();
+}
 function handleDrop(e){
   e.preventDefault();
   const items = e.dataTransfer && e.dataTransfer.items ? Array.from(e.dataTransfer.items) : [];
@@ -594,13 +659,17 @@ function handleDrop(e){
   for (const it of items){ const en = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; if (en) entries.push(en); }
   if (!entries.length){ if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) loadImageFiles(e.dataTransfer.files); return; }
   const files = [];
+  let lastTick = 0;
   const readEntry = (entry) => new Promise(res => {
     if (!entry){ res(); return; }
-    if (entry.isFile){ entry.file(f=>{ files.push(f); res(); }, ()=>res()); }
+    if (entry.isFile){ entry.file(f=>{ files.push(f);
+        const now = Date.now();                       // 大量文件时给出扫描进度，避免看起来“没反应”
+        if (now - lastTick > 300) { lastTick = now; setStatus('正在读取文件夹… 已发现 '+files.length+' 个文件'); }
+        res(); }, ()=>res()); }
     else if (entry.isDirectory){ const rd = entry.createReader(); const readBatch = ()=> rd.readEntries(batch=>{ if(batch.length){ batch.forEach(readEntry); readBatch(); } else res(); }, ()=>res()); readBatch(); }
     else res();
   });
-  Promise.all(entries.map(readEntry)).then(()=>loadImageFiles(files));
+  Promise.all(entries.map(readEntry)).then(()=>{ if(!files.length){ setStatus('拖进来的文件夹里没有找到图片'); return; } setStatus('已发现 '+files.length+' 个图片文件，开始载入…'); loadImageFiles(files); });
 }
 function init(){
   document.getElementById('folderInput').addEventListener('change',e=>{ if(e.target.files.length) loadImageFiles(e.target.files); });
