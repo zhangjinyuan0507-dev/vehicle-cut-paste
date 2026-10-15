@@ -20,6 +20,7 @@ let hideLabels = false, saveRoot = null;
 let mode = 'base';                 // 类别组：base（基础四类）| incr（类增量新四类）
 let spectrum = 'ir';               // 光谱：ir（红外）| vis（可见光）
 let palFilter = 'all';             // 可见光配色筛选：all | desert_camo | olive_green（红外固定 ir）
+let modeReq = 0, specReq = 0;      // 异步切换的连点保护计数
 let SPRITES = [];                  // 已加载素材的合集；si 为全局下标，切换模式/光谱都不会错位
 const state = { size:0.06, bright:0.8, contrast:1, blur:0.2, rot:0 };
 // CLS / CLS_CN / CLS_ID / MODES 由 classes.js 定义；SPECTRA / PALETTES / SPRITE_GROUPS 由 sprite_groups.js 定义
@@ -388,25 +389,48 @@ function cleanOtherMode(){
   if(removed>0){ if(selected>=placements.length) selected=-1; redraw(); markDirty(); updateMixInfo(); updateStats(); updatePlan(); updateInfo(); }
   setStatus(removed>0 ? ('已删除本图 '+removed+' 辆不属于当前光谱/模式的车') : '本图没有其他光谱/模式的车');
 }
-/* 切换类别组（基础四类 / 类增量新四类）：只换类别表与可选材料，不重新加载素材 */
-function switchMode(m){
+/* 切换类别组（基础四类 / 类增量新四类）
+   注意：红外下两组素材是两个文件（sprites_ir_base.js / sprites_ir_incr.js），切到类增量必须先把文件加载进来，
+   否则会出现「切过去什么车都放不下」——这里统一走 ensureGroups + loadPoolImages，保证切完即可用。 */
+async function switchMode(m){
   if(m===mode || !MODES[m]) return;
+  const token=++modeReq;   // 连点保护：只有最后一次切换能落地
+  setSaveStatus('正在加载「'+modeLabel(m)+'」所需素材…');
+  try{ await ensureGroups(spectrum, palFilter); }
+  catch(e){
+    if(token!==modeReq) return;
+    setStatus('素材加载失败：'+(e&&e.message||e)+'（类别组未切换）');
+    const sel=document.getElementById('modeSel'); if(sel) sel.value=mode;
+    showSaveStatus();
+    return;
+  }
+  await loadPoolImages();
+  if(token!==modeReq) return;
   mode=m;
   const sel=document.getElementById('modeSel'); if(sel) sel.value=m;
   manualCls=-1; lastSiByCls={}; lastPlacedSiByCls={};
   buildVehSelect(); buildModeSelect(); genPlan(); updateStats(); updateInfo(); updateSizeLabel(); updateMixInfo(); showSaveStatus(); redraw();
-  setStatus('已切到「'+modeLabel(m)+'」：'+spectrumLabel()+' 素材 '+modeSpriteCount(spectrum,m,palFilter)+' 个 · 类别 '+modeClasses(m).join(' / ')+
-            '（键盘 1-4 对应本组四类；两套数据请分别保存到不同目录）');
+  const n=modeSpriteCount(spectrum,m,palFilter);
+  const usable=spritesOfCls(modeClassIds(m)[0]).length;
+  if(!usable){
+    setStatus('⚠ 已切到「'+modeLabel(m)+'」但该光谱/配色下没有可用素材（可用素材 0 个），请检查素材文件是否加载成功');
+  } else {
+    setStatus('已切到「'+modeLabel(m)+'」：'+spectrumLabel()+' 素材 '+n+' 个 · 类别 '+modeClasses(m).join(' / ')+
+              '（键盘 1-4 对应本组四类；两套数据请分别保存到不同目录）');
+  }
 }
 /* 切换光谱（红外 / 可见光）与配色筛选：按需加载素材文件，已有标注不丢 */
 async function switchSpectrum(sp, pal){
   const nextPal = (sp==='vis') ? (pal || (palFilter==='all'?'all':palFilter)) : 'ir';
   if(sp===spectrum && (sp!=='vis' || nextPal===palFilter)) return;
+  const token=++specReq;   // 连点保护：只有最后一次切换能落地
   try{ await ensureGroups(sp, nextPal); }
-  catch(e){ setStatus('素材加载失败：'+(e&&e.message||e)); return; }
+  catch(e){ if(token===specReq) setStatus('素材加载失败：'+(e&&e.message||e)); return; }
+  if(token!==specReq) return;
   spectrum=sp; palFilter=nextPal;
   setSaveStatus('正在加载「'+spectrumLabel()+'」素材图片…');
   await loadPoolImages();
+  if(token!==specReq) return;
   manualCls=-1; lastSiByCls={}; lastPlacedSiByCls={};
   buildSpectrumSelect(); buildPaletteSelect(); buildVehSelect(); buildModeSelect();
   genPlan(); updateStats(); updateInfo(); updateSizeLabel(); updateMixInfo(); showSaveStatus(); redraw();
@@ -430,7 +454,11 @@ function placeVehicleAt(ix,iy,rot){
   else ci=recommendType();
   let si=(plan && plan.nextSi!=null && SPRITES[plan.nextSi] && SPRITES[plan.nextSi].ci===ci && spriteMatches(SPRITES[plan.nextSi])) ? plan.nextSi : pickSprite(ci);
   if(si<0) si=pickSprite(ci);
-  if(si<0) return;
+  if(si<0){
+    // 不再静默失败：明确告诉用户是「当前光谱/类别组没有可用素材」
+    setStatus('⚠ 放不下车：当前「'+spectrumLabel()+' · '+modeLabel(mode)+'」下 '+CLS[ci]+' 没有可用素材（请确认素材文件已加载，或换类别/光谱）');
+    return;
+  }
   // 严格避免「同一类别连续两次用同一个素材」：与上一次**实际摆放**比对，而不只是与预览记录比对
   const pool=spritesOfCls(ci);
   if(pool.length>1 && lastPlacedSiByCls[ci]===si){
