@@ -589,27 +589,37 @@ function download(name,blob){
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1200);
   }catch(e){ alert('下载失败：'+(e&&e.message||e)); }
 }
-function setDirInfo(){ document.getElementById('dirInfo').innerHTML='已选择: <b class="fname">'+saveRoot.name+'</b> （点击更改；更改前会把未保存的先写到原文件夹）'; }
-/* 换保存文件夹：先把未保存的标注全部写进「原文件夹」，再切到新文件夹（避免新旧批次混在一起） */
+function setDirInfo(){ document.getElementById('dirInfo').innerHTML='已选择: <b class="fname">'+saveRoot.name+'</b> （点击更改；换目录后已标注的图会标记为待保存，可整体重存）'; }
+/* 换保存文件夹：不自动保存；只把「已标注的图」全部标记为待保存，之后点「保存全部标注」即可整体重存 */
 async function pickDir(){
   if(!window.showDirectoryPicker){ alert('该浏览器不支持文件夹选择'); return; }
-  const pending = pendingItems().length;
-  let flushed = null;
-  if(pending) flushed = await flushBeforeDirChange('保存文件夹');
   try{
     const next = await window.showDirectoryPicker({mode:'readwrite'});
-    saveRoot = next; setDirInfo();
-    const left = pendingItems().length;
-    setStatus((flushed && flushed.saved ? ('已先把 '+flushed.saved+' 张写入「'+flushed.label+'」；') : '')
-      + '保存文件夹已切到「'+next.name+'」' + (left ? ('，还有 '+left+' 张未保存会写进新文件夹') : '，当前没有未保存的标注'));
+    applyRoot(next);
   }catch(err){
-    if(err && err.name==='AbortError'){
-      const left = pendingItems().length;
-      setStatus('已取消选择，保存文件夹仍是「'+(saveRoot?saveRoot.name:'未选择')+'」'+ (left?('（还有 '+left+' 张未保存）'):''));
-      return;
-    }
+    if(err && err.name==='AbortError'){ setStatus('已取消选择，保存文件夹仍是「'+(saveRoot?saveRoot.name:'未选择')+'」'); return; }
     alert('选择文件夹失败：'+(err&&err.message||err));
   }
+}
+/* 选定新保存文件夹后的统一处理 */
+function applyRoot(next){
+  saveRoot = next; setDirInfo();
+  const n = markAllNeedsResave();
+  setStatus('保存文件夹已切到「'+next.name+'」' + (n
+    ? ('：'+n+' 张已标注的图都标记为待保存（含没改动过的），点「保存全部标注」就会把它们全部写到新文件夹')
+    : '，当前还没有可保存的标注'));
+  return n;
+}
+/* 把「所有已标注的图」标记为待保存（含之前已保存过、没改动过的），用于换目录后整体重存 */
+function markAllNeedsResave(){
+  saveCurrentPlacements();
+  let n=0;
+  for(let i=0;i<bgFiles.length;i++){
+    const pl=imgPlacements[i]||[];
+    if(pl.length){ savedMap[i]=false; dirtyMap[i]=false; n++; }
+  }
+  showSaveStatus();
+  return n;
 }
 async function ensureRoot(){ if(saveRoot) return saveRoot; if(!window.showDirectoryPicker) return null; try{ saveRoot=await window.showDirectoryPicker({mode:'readwrite'}); setDirInfo(); return saveRoot; }catch(err){ return null; } }
 /* 待保存的图：有车位、且没保存过或有改动 */
@@ -654,20 +664,19 @@ async function writeItems(items, silent){
   }
   return {mode:'download', ok:ok, total:items.length, root:null};
 }
-/* 切换保存位置（文件夹或子文件夹）之前：先把未保存的全部写进原位置 */
-async function flushBeforeDirChange(why){
-  const items = pendingItems();
-  if(!items.length) return {saved:0, total:0, skipped:true, label:''};
-  const label = saveRoot ? saveRoot.name : '(逐张下载)';
-  setSaveStatus('切换'+(why||'保存位置')+'前：正在把 '+items.length+' 张未保存的标注写入「'+label+'」…');
+/* 全部重存：把所有「有标注的图」重新合成并写出（含没改动过的、之前已保存过的） */
+async function resaveAll(){
+  if(!bgFiles.length){ alert('先加载背景图'); return; }
+  saveCurrentPlacements();
+  const items=[];
+  for(let i=0;i<bgFiles.length;i++){ const pl=imgPlacements[i]||[]; if(pl.length) items.push({idx:i,pl,stem:bgFiles[i].name.replace(/\.[^.]+$/,'')}); }
+  if(!items.length){ alert('还没有任何标注可以保存'); return; }
+  if(items.length > 5 && !confirm('将重新合成并写出全部 '+items.length+' 张（含没修改过的），覆盖目标里的同名文件。继续？')) return;
   try{
-    const r = await writeItems(items, true);
-    showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 切换前已保存 '+r.ok+'/'+r.total+' 张 → '+label);
-    return {saved:r.ok, total:r.total, skipped:false, label:label, mode:r.mode};
-  }catch(err){
-    showSaveStatus('切换前的自动保存失败：'+(err&&err.message||err)+'（这些仍留在待保存里）');
-    return {saved:0, total:items.length, failed:true, label:label};
-  }
+    const r = await writeItems(items, false);
+    showSaveStatus(saveTag(items.map(it=>it.pl).flat())+' · 已重存 '+r.ok+'/'+r.total+' 张（含未修改）'
+      + (r.mode==='folder' && r.root ? (' → '+r.root.name+'/images + xml/') : '（逐张下载）'));
+  }catch(err){ alert('重存出错：'+(err&&err.message||err)); }
 }
 function exportJSON(){ if(!bg) return; const data={image:bg.name,width:bg.naturalWidth,height:bg.naturalHeight,boxes:placements.map(p=>({class:clsName(p),sprite:(SPRITES[p.si]||{}).n||'',cx:Math.round(p.x),cy:Math.round(p.y),rot:p.rot,size:p.size,bright:p.bright,contrast:p.contrast,blur:p.blur}))}; download(shareName()+'.json',new Blob([JSON.stringify(data,null,2)],{type:'application/json'})); }
 function validBlob(b){ return b && b.size>0; }
@@ -762,6 +771,7 @@ function init(){
   function flash(btn){ /* 轻提示：仅加一个短暂的按压缩放/反白（不改持久颜色） */ }
   document.getElementById('saveCur').addEventListener('click',()=>saveCurrent());
   document.getElementById('saveAll').addEventListener('click',()=>saveAll());
+  document.getElementById('resaveAll').addEventListener('click',()=>resaveAll());
   document.getElementById('undo').addEventListener('click',()=>{ if(placements.length) placements.pop(); if(selected>=placements.length) selected=-1; drag=null; resize=null; rotDrag=null;  redraw(); markDirty(); });
   cv.addEventListener('mousedown',onDown); cv.addEventListener('mousemove',onMove); cv.addEventListener('mouseup',onUp);
   cv.addEventListener('contextmenu',e=>e.preventDefault()); cv.addEventListener('wheel',wheelZoom,{passive:false});

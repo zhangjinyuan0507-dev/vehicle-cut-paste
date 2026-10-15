@@ -136,10 +136,11 @@
         <button class="save" id="saveCur">保存当前图片</button>
         <button class="save" id="saveAll">保存全部标注</button>
       </div>
+      <button id="resaveAll" style="width:100%;margin-top:6px;">全部重存（含没修改过的）</button>
       <div class="status" id="saveStatus">当前图片状态：未保存</div>
       <div class="note">保存后在所选根目录下自动创建 <b>images/</b>（无框图）与 <b>xml/</b>（VOC）。图片与 XML 同名。<br>
       标注框按<b>车辆实体范围</b>（素材透明边界）计算，不含素材四周的透明留白。<br>
-      <b>换保存文件夹前会自动把未保存的标注全部写进原文件夹</b>，避免新旧批次混在一起；换目录后新的保存都进新文件夹。</div>
+      <b>换保存文件夹不会自动保存</b>；换目录后已标注的图会全部标记为「待保存」，点<b>「保存全部标注」</b>就能把它们（<b>含没修改过的</b>）一起写到新文件夹，也可以随时点<b>「全部重存」</b>整体重写一遍。</div>
     </div>
 
     <div class="sec">
@@ -186,6 +187,6 @@
 <script src="classes.js"></script>
 <script src="sprite_groups.js"></script>
 <script src="sprites_ir_base.js"></script>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
