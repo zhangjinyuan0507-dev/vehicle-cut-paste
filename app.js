@@ -77,17 +77,19 @@ function loadScriptTag(url, timeoutMs){
     document.head.appendChild(sc);
   });
 }
-/* http(s) 下用 fetch 读流：能报进度、能区分 404；只卡在“长时间没有数据”时才放弃（慢速但持续的下载不会被误杀） */
+/* http(s) 下用 fetch 读流：能报进度、能区分 404；只卡在“长时间没有数据”时才放弃
+   （慢速但持续的下载不会被误杀：首包等 45 秒、传输中停顿 45 秒才放弃） */
 async function loadScriptProgress(url, label){
   if(location.protocol === 'file:') return loadScriptTag(url, 60000);
   const ctl = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  const host = url.replace(/^https?:\/\//,'').split('/')[0];
   let resp=null;
   try{
     const p = fetch(url, ctl ? {signal:ctl.signal} : undefined);
-    const watchdog = new Promise((_,rej)=>setTimeout(()=>{ if(ctl) ctl.abort(); rej(new Error('连接超时（20 秒没有响应）')); }, 20000));
+    const watchdog = new Promise((_,rej)=>setTimeout(()=>{ if(ctl) ctl.abort(); rej(new Error('连接超时（45 秒没有响应）')); }, 45000));
     resp = await Promise.race([p, watchdog]);
   }
-  catch(e){ return loadScriptTag(url, 120000); }        // fetch 不可用（CORS/被拦）→ 退回普通 <script>
+  catch(e){ return loadScriptTag(url, 180000); }        // fetch 不可用（CORS/被拦）→ 退回普通 <script>
   if(!resp.ok) throw new Error('HTTP '+resp.status);
   const total = parseInt(resp.headers.get('content-length')||'0',10);
   const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
@@ -95,14 +97,14 @@ async function loadScriptProgress(url, label){
   if(reader){
     const chunks=[]; let got=0;
     for(;;){
-      const stall = new Promise((_,rej)=>setTimeout(()=>rej(new Error('传输中断（20 秒没有新数据）')), 20000));
+      const stall = new Promise((_,rej)=>setTimeout(()=>rej(new Error('传输中断（45 秒没有新数据）')), 45000));
       let step;
       try{ step = await Promise.race([reader.read(), stall]); }
       catch(e){ if(ctl) ctl.abort(); throw e; }
       if(step.done) break;
       chunks.push(step.value); got += step.value.length;
       const mb=(got/1048576).toFixed(1), tot=total?(total/1048576).toFixed(1):'?';
-      setStatus('正在加载「'+label+'」素材… '+mb+' / '+tot+' MB'+(total?('（'+Math.round(got*100/total)+'%）'):''));
+      setStatus('正在从 '+host+' 加载「'+label+'」素材… '+mb+' / '+tot+' MB'+(total?('（'+Math.round(got*100/total)+'%）'):''));
     }
     blob = new Blob(chunks,{type:'text/javascript'});
   } else {
@@ -112,16 +114,16 @@ async function loadScriptProgress(url, label){
   try{ await loadScriptTag(u, 60000); } finally{ setTimeout(()=>URL.revokeObjectURL(u), 2000); }
   return true;
 }
-/* 加载一个分组文件：同目录优先（2 次），失败再试镜像 */
+/* 加载一个分组文件：同目录优先（2 次），失败再试镜像（各 1 次）；整体失败时给出可重试的错误 */
 async function loadGroupFile(file, label){
   const urls = candidateUrls(file);
   let lastErr = null, tried = [];
   for(const url of urls){
-    const attempts = (url.indexOf(baseDir()) === 0) ? 3 : 1;
+    const attempts = (url.indexOf(baseDir()) === 0) ? 2 : 1;
     for(let attempt=1; attempt<=attempts; attempt++){
       try{ await loadScriptProgress(url, label); return url; }
       catch(e){
-        lastErr = e;
+        if(!lastErr) lastErr = e;
         tried.push(url.replace(/^https?:\/\//,'').replace(/[?#].*$/,'').slice(0,58) + (attempt>1?(' ×'+attempt):''));
         await new Promise(r=>setTimeout(r, 300*attempt));
       }
