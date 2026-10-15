@@ -54,6 +54,83 @@ function rebuildSprites(){
   groupKeys().forEach(k=>{ const a=groupArray(k); if(a) list.push.apply(list,a); });
   SPRITES=list;
 }
+/* ---------- 素材文件加载：同目录 → jsDelivr 镜像 → github.io，逐个重试；http(s) 下带进度 ---------- */
+const MIRROR_BASES = [
+  'https://cdn.jsdelivr.net/gh/zhangjinyuan0507-dev/vehicle-cut-paste@main/',
+  'https://zhangjinyuan0507-dev.github.io/vehicle-cut-paste/'
+];
+let lastFailedLoad = null;                 // 记住失败的光谱/配色，供「重试加载素材」按钮使用
+function baseDir(){ return location.href.replace(/[?#].*$/,'').replace(/[^/]*$/,''); }
+function candidateUrls(file){
+  const list = [baseDir() + file];
+  MIRROR_BASES.forEach(b => { if(list.indexOf(b+file) < 0) list.push(b+file); });
+  return list;
+}
+function loadScriptTag(url, timeoutMs){
+  return new Promise((res,rej)=>{
+    const sc=document.createElement('script');
+    let done=false;
+    const t = setTimeout(()=>{ if(done) return; done=true; sc.remove(); rej(new Error('加载超时 '+(timeoutMs||120000)+'ms')); }, timeoutMs || 120000);
+    sc.src=url;
+    sc.onload=()=>{ if(done) return; done=true; clearTimeout(t); sc.remove(); res(true); };
+    sc.onerror=()=>{ if(done) return; done=true; clearTimeout(t); sc.remove(); rej(new Error('无法加载 '+url)); };
+    document.head.appendChild(sc);
+  });
+}
+/* http(s) 下用 fetch 读流：能报进度、能区分 404；只卡在“长时间没有数据”时才放弃（慢速但持续的下载不会被误杀） */
+async function loadScriptProgress(url, label){
+  if(location.protocol === 'file:') return loadScriptTag(url, 60000);
+  const ctl = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  let resp=null;
+  try{
+    const p = fetch(url, ctl ? {signal:ctl.signal} : undefined);
+    const watchdog = new Promise((_,rej)=>setTimeout(()=>{ if(ctl) ctl.abort(); rej(new Error('连接超时（20 秒没有响应）')); }, 20000));
+    resp = await Promise.race([p, watchdog]);
+  }
+  catch(e){ return loadScriptTag(url, 120000); }        // fetch 不可用（CORS/被拦）→ 退回普通 <script>
+  if(!resp.ok) throw new Error('HTTP '+resp.status);
+  const total = parseInt(resp.headers.get('content-length')||'0',10);
+  const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
+  let blob=null;
+  if(reader){
+    const chunks=[]; let got=0;
+    for(;;){
+      const stall = new Promise((_,rej)=>setTimeout(()=>rej(new Error('传输中断（20 秒没有新数据）')), 20000));
+      let step;
+      try{ step = await Promise.race([reader.read(), stall]); }
+      catch(e){ if(ctl) ctl.abort(); throw e; }
+      if(step.done) break;
+      chunks.push(step.value); got += step.value.length;
+      const mb=(got/1048576).toFixed(1), tot=total?(total/1048576).toFixed(1):'?';
+      setStatus('正在加载「'+label+'」素材… '+mb+' / '+tot+' MB'+(total?('（'+Math.round(got*100/total)+'%）'):''));
+    }
+    blob = new Blob(chunks,{type:'text/javascript'});
+  } else {
+    blob = await resp.blob();
+  }
+  const u = URL.createObjectURL(blob);
+  try{ await loadScriptTag(u, 60000); } finally{ setTimeout(()=>URL.revokeObjectURL(u), 2000); }
+  return true;
+}
+/* 加载一个分组文件：同目录优先（2 次），失败再试镜像 */
+async function loadGroupFile(file, label){
+  const urls = candidateUrls(file);
+  let lastErr = null, tried = [];
+  for(const url of urls){
+    const attempts = (url.indexOf(baseDir()) === 0) ? 3 : 1;
+    for(let attempt=1; attempt<=attempts; attempt++){
+      try{ await loadScriptProgress(url, label); return url; }
+      catch(e){
+        lastErr = e;
+        tried.push(url.replace(/^https?:\/\//,'').replace(/[?#].*$/,'').slice(0,58) + (attempt>1?(' ×'+attempt):''));
+        await new Promise(r=>setTimeout(r, 300*attempt));
+      }
+    }
+  }
+  const err = new Error('素材加载失败：'+(lastErr&&lastErr.message||'网络错误'));
+  err.tried = tried;
+  throw err;
+}
 /* 当前「光谱 + 配色」需要哪些分组 */
 function groupsNeeded(sp, pal){
   return groupKeys().filter(k=>{
@@ -63,15 +140,45 @@ function groupsNeeded(sp, pal){
     return true;
   });
 }
-function loadScriptOnce(src){ return new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src=src; sc.onload=()=>res(true); sc.onerror=()=>rej(new Error('无法加载 '+src)); document.head.appendChild(sc); }); }
-async function ensureGroups(sp, pal){
-  const need=groupsNeeded(sp, pal).filter(k=>!groupArray(k));
-  for(const k of need){
-    setSaveStatus('正在加载「'+SPRITE_GROUPS[k].label+'」素材…');
-    await loadScriptOnce(SPRITE_GROUPS[k].file+'?v=2');
+async function ensureGroups(sp, pal, opts){
+  const needed = groupsNeeded(sp, pal);
+  const need = needed.filter(k=>!groupArray(k));
+  // firstOnly：先只加载第一个分组（可见光两套配色各 5MB 左右，先出一套就能开始标注，其余后台补）
+  const first = (opts && opts.firstOnly) ? need.slice(0,1) : need;
+  const rest  = (opts && opts.firstOnly) ? need.slice(1)   : [];
+  for(const k of first){
+    setStatus('正在加载「'+SPRITE_GROUPS[k].label+'」素材…');
+    await loadGroupFile(SPRITE_GROUPS[k].file+'?v=2', SPRITE_GROUPS[k].label);
   }
-  if(need.length) rebuildSprites();
-  return need.length;
+  // 注意：要按「需要哪些分组」判断，而不是「下载了几个」——单文件版里素材是内联的，一个都不用下载，
+  // 但同样必须重建素材表，否则 SPRITES 会是空的（什么都放不下）。
+  if(needed.length) rebuildSprites();
+  return {loaded:first.length, rest:rest};
+}
+/* 后台把剩下的分组补齐，补完刷新可选素材 */
+async function loadRestGroups(rest, sp, pal){
+  for(const k of rest){
+    try{ await loadGroupFile(SPRITE_GROUPS[k].file+'?v=2', SPRITE_GROUPS[k].label); }
+    catch(e){
+      lastFailedLoad = {sp:sp, pal:pal};
+      setStatus('「'+SPRITE_GROUPS[k].label+'」素材没加载成功：'+(e.message||e)+'　可点上方「重试加载素材」');
+      showRetry(true); showSaveStatus();
+      return;
+    }
+  }
+  if(rest.length){
+    rebuildSprites();
+    await loadPoolImages();
+    buildVehSelect(); updatePlan(); updateStats(); updateInfo(); showSaveStatus(); redraw();
+    setStatus('素材已补齐：'+spectrumLabel()+(spectrum==='vis'?(' · '+(palFilter==='all'?'全部配色':(PALETTES[palFilter]||palFilter))):'')+' 共 '+modeSpriteCount(spectrum,mode,palFilter)+' 个可用');
+  }
+}
+function showRetry(on){ const b=document.getElementById('retryLoad'); if(b) b.style.display = on ? 'inline-block' : 'none'; }
+async function retryLoad(){
+  const t = lastFailedLoad || {sp:(spectrum==='vis'?'ir':'vis'), pal:null};
+  showRetry(false);
+  setStatus('正在重试加载素材…');
+  await switchSpectrum(t.sp, t.pal);
 }
 /* 只加载当前「光谱+配色」范围内的素材图片（图片缓存按全局下标，多套可共存） */
 async function loadPoolImages(){
@@ -79,7 +186,20 @@ async function loadPoolImages(){
   for(let i=0;i<SPRITES.length;i++){ const s=SPRITES[i]; if(!spriteMatches(s) || vehImgs[i]) continue; const im=await loadImage(s.src); if(im) vehImgs[i]=im; n++; }
   return n;
 }
-async function initVehicles(){ rebuildSprites(); await loadPoolImages(); }
+async function initVehicles(){
+  try{
+    const r = await ensureGroups(spectrum, palFilter, {firstOnly:true});   // 红外基础组也是按需加载（页面秒开，素材带进度）
+    await loadPoolImages();
+    if(r.rest.length) loadRestGroups(r.rest, spectrum, palFilter);
+    return true;
+  }catch(e){
+    lastFailedLoad = {sp:spectrum, pal:palFilter};
+    showRetry(true);
+    setStatus('⚠ 素材加载失败（'+(e&&e.message||e)+'）；已尝试：'+((e&&e.tried)||[]).join(' / ')+
+              '　—— 网络慢/被拦时点上方「重试加载素材」；或改用单文件版（无需联网）');
+    return false;
+  }
+}
 function spriteMatches(sp){ return sp.sp===spectrum && (spectrum!=='vis' || palFilter==='all' || sp.pal===palFilter); }
 function spriteOf(p){ return SPRITES[p.si] || null; }
 function clsOf(p){ const s=spriteOf(p); return s? s.ci : 0; }
@@ -398,10 +518,15 @@ async function switchMode(m){
   if(m===mode || !MODES[m]) return;
   const token=++modeReq;   // 连点保护：只有最后一次切换能落地
   setSaveStatus('正在加载「'+modeLabel(m)+'」所需素材…');
-  try{ await ensureGroups(spectrum, palFilter); }
+  try{
+    const r = await ensureGroups(spectrum, palFilter, {firstOnly:true});
+    if(r.rest.length) loadRestGroups(r.rest, spectrum, palFilter);   // 后台补齐，不阻塞类别组切换
+  }
   catch(e){
     if(token!==modeReq) return;
-    setStatus('素材加载失败：'+(e&&e.message||e)+'（类别组未切换）');
+    lastFailedLoad = {sp:spectrum, pal:palFilter};
+    showRetry(true);
+    setStatus('⚠ 素材加载失败（'+(e&&e.message||e)+'）；已尝试的地址：'+((e&&e.tried)||[]).join(' / ')+'（类别组未切换）');
     const sel=document.getElementById('modeSel'); if(sel) sel.value=mode;
     showSaveStatus();
     return;
@@ -428,8 +553,21 @@ async function switchSpectrum(sp, pal){
   const nextPal = (sp==='vis') ? ((pal && isVisPalette(pal)) ? pal : (isVisPalette(palFilter) ? palFilter : 'all')) : 'ir';
   if(sp===spectrum && (sp!=='vis' || nextPal===palFilter)) return;
   const token=++specReq;   // 连点保护：只有最后一次切换能落地
-  try{ await ensureGroups(sp, nextPal); }
-  catch(e){ if(token===specReq) setStatus('素材加载失败：'+(e&&e.message||e)); return; }
+  let rest=[];
+  try{
+    const r = await ensureGroups(sp, nextPal, {firstOnly:true});   // 先出一套配色/分组，立刻可用
+    rest = r.rest;
+    lastFailedLoad = null; showRetry(false);
+  }
+  catch(e){
+    if(token===specReq){
+      lastFailedLoad = {sp:sp, pal:nextPal};
+      showRetry(true);
+      setStatus('⚠ 素材加载失败（'+(e&&e.message||e)+'）；已尝试的地址：'+((e&&e.tried)||[]).join(' / ')+
+                '　—— 仍在「'+spectrumLabel()+'」，可点上方「重试加载素材」重试（网络慢时多试一次通常就好了）');
+    }
+    return;
+  }
   if(token!==specReq) return;
   spectrum=sp; palFilter=nextPal;
   setSaveStatus('正在加载「'+spectrumLabel()+'」素材图片…');
@@ -439,7 +577,9 @@ async function switchSpectrum(sp, pal){
   buildSpectrumSelect(); buildPaletteSelect(); buildVehSelect(); buildModeSelect();
   genPlan(); updateStats(); updateInfo(); updateSizeLabel(); updateMixInfo(); showSaveStatus(); redraw();
   setStatus('已切到「'+spectrumLabel()+(spectrum==='vis'?(' · '+(palFilter==='all'?'全部配色':(PALETTES[palFilter]||palFilter))):'')+
-            '」：本组可用素材 '+modeSpriteCount(spectrum, mode, palFilter)+' 个。另一光谱/模式的车不会被删除，但会提示混用。');
+            '」：本组可用素材 '+modeSpriteCount(spectrum, mode, palFilter)+' 个。另一光谱/模式的车不会被删除，但会提示混用。'+
+            (rest.length ? ('　（其余 '+(PALETTES[SPRITE_GROUPS[rest[0]].palette]||rest[0])+' 素材正在后台加载，可能暂时只能选到部分配色）') : ''));
+  if(rest.length) loadRestGroups(rest, sp, nextPal);      // 后台补齐，不阻塞操作
 }
 function genPlan(){ plan={count:2+Math.floor(Math.random()*5), nextSi:pickSprite(recommendType())}; updatePlan(); updateInfo(); updateSizeLabel(); }
 function updatePlan(){
@@ -755,6 +895,7 @@ function init(){
   document.getElementById('modeSel').addEventListener('change',e=>switchMode(e.target.value));
   document.getElementById('spectrumSel').addEventListener('change',e=>switchSpectrum(e.target.value));
   document.getElementById('paletteSel').addEventListener('change',e=>switchSpectrum(spectrum, e.target.value));
+  document.getElementById('retryLoad').addEventListener('click',()=>retryLoad());
   document.getElementById('cleanOther').addEventListener('click',cleanOtherMode);
   document.getElementById('vehSel').addEventListener('change',e=>{ const v=parseInt(e.target.value); if(v>=0) setManualCls(v); else { manualCls=-1; updatePlan(); updateInfo(); updateSizeLabel(); } });
   document.getElementById('fitBtn').addEventListener('click',fitZoom);
@@ -792,9 +933,9 @@ function buildModeSelect(){
   sel.value=mode;
 }
 init();
-initVehicles().then(()=>{
+initVehicles().then((ok)=>{
   buildSpectrumSelect(); buildPaletteSelect(); buildVehSelect(); buildModeSelect();
-  setStatus('素材已加载：'+spectrumLabel()+' · '+modeLabel(mode)+' '+modeSpriteCount(spectrum,mode,palFilter)+' 个素材 · 类别 '+modeClasses(mode).join(' / ')+
+  if(ok !== false) setStatus('素材已加载：'+spectrumLabel()+' · '+modeLabel(mode)+' '+modeSpriteCount(spectrum,mode,palFilter)+' 个素材 · 类别 '+modeClasses(mode).join(' / ')+
             '。打开一个背景图文件夹：点空白=放车（自动按类别挑车型/视角，1-4 可指定类别）；顶部可切「光谱（红外/可见光）」「配色」「类别组」。');
   updateStats(); updateMixInfo();
 });

@@ -86,6 +86,21 @@ python scripts\move_cutpaste_output.py --from "<错的根目录>" --to "<正确�
   选项：`--copy`（复制不删源）、`--overwrite`（允许覆盖目标同名文件，默认遇冲突跳过并列出）。
 - 避免下次再发生：保存前看一眼右侧「已选择: <文件夹名>」那一行（浏览器出于隐私只暴露文件夹名，不暴露完整路径）；**换保存文件夹前工具会自动把未保存的先写进原目录**，状态栏会写清"写到哪、切到哪"；建议一个批次固定一个输出根目录（基础四类 / 类增量 / 可见光各一个）。
 
+## 分享给别人 / 网络慢怎么办
+
+- **首选：单文件版（零联网，对方一定能用）**
+
+```bat
+python scripts\build_cutpaste_standalone.py --site github_repos\vehicle-cut-paste --out "dist\vehicle-cut-paste-单文件版.html"
+```
+
+  生成约 16MB 的**单个 HTML**，把文件发给对方（微信 / QQ / 邮件 / U 盘都行），双击用 Chrome/Edge 打开即可。
+  红外、可见光、两套配色、两个类别组的素材全部内联在文件里，**不存在"素材下不下来"的问题**；保存到文件夹、XML 格式与在线版完全一致（同一套 54 项测试两种形态都跑过）。
+
+- **在线版（发网址）**：页面本体只有约 60KB（秒开），素材**按需加载并显示进度**，例如
+  `正在加载「可见光 · 沙漠迷彩」素材… 3.2 / 5.4 MB（59%）`。单次加载失败会**同址重试 3 次**，仍失败则自动换 **jsDelivr / statically** 等镜像再试；实在不行，顶部会出现 **「↻ 重试加载素材」** 按钮（点一下重来，状态栏会列出试过哪些地址）。
+  注意：github.io 在国内可能很慢或被拦（实测本机拉 4.8MB 素材需要约 60 秒）。**给国内同事发网址时，建议直接给单文件版**；用网址时请让对方等一下素材进度条，或点「重试加载素材」。
+
 ## 背景图载入（大量图片也顺畅）
 
 - **按需解码**：选文件夹/拖文件夹后，工具只登记文件清单（列表立刻可用），真正解码只发生在切到那张图时；内存里最多保留最近 **4 张**解码结果，其余自动释放。因此一次选几百上千张也不会卡死。
@@ -121,6 +136,12 @@ python scripts\verify_cutpaste_stress.py --site github_repos\vehicle-cut-paste -
 ```
 
 两个套件必须分开跑：同一个无头 Chrome 里既跑完整功能流程又跑大批量载入，会撞上 `--virtual-time-budget` 预算而挂住。
+
+单文件版也用同一套功能断言验证（加 `--single`）：
+
+```bat
+python scripts\verify_cutpaste_v2_page.py --site github_repos\vehicle-cut-paste --single "dist\vehicle-cut-paste-单文件版.html" --out tmp\cutpaste_v2_verify
+```
 
 ## 注意事项与风险
 
